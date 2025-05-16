@@ -1,0 +1,254 @@
+---
+title: "EDA"
+author: "Vyshnavi V"
+date: "2025-03-24"
+output: html_document
+---
+
+```{r}
+# Load necessary libraries
+library(caret)  # For train-test split
+library(mgcv)   # For GAM
+library(DMwR2)  # For SMOTE
+library(pROC)   # For ROC analysis
+library(randomForest)  # For Random Forest
+library(ROSE)   # Handling class imbalance
+library(iml)    # SHAP explanations
+library(ggplot2) # Visualization
+
+set.seed(42)  # Ensure reproducibility
+
+# ---------------------- Load Dataset ----------------------
+
+# Load dataset (Update the file path as needed)
+data <- read.csv("C:\\Users\\VYSHANAVI V\\Downloads\\survey.csv", stringsAsFactors = FALSE)
+
+# Ensure target variable is a factor
+data$benefits <- factor(data$benefits)  
+
+# Perform stratified split (80% train, 20% test)
+split_index <- createDataPartition(data$benefits, p = 0.8, list = FALSE)
+
+train_data <- data[split_index, ]
+test_data <- data[-split_index, ]
+
+# Verify class distribution in train and test sets
+cat("Class distribution in Train:\n")
+print(table(train_data$benefits))
+
+cat("Class distribution in Test:\n")
+print(table(test_data$benefits))
+
+# Convert to binary classification
+train_data$benefits <- ifelse(train_data$benefits == "Yes", "1", "0")
+test_data$benefits <- ifelse(test_data$benefits == "Yes", "1", "0")
+
+# Convert to factor
+train_data$benefits <- factor(train_data$benefits, levels = c("0", "1"))
+test_data$benefits <- factor(test_data$benefits, levels = c("0", "1"))
+
+# Check distribution
+table(train_data$benefits)
+table(test_data$benefits)
+
+```
+
+```{r}
+# Load necessary libraries
+library(mgcv)       # For GAM
+library(caret)      # For model evaluation
+library(DMwR2)      # For SMOTE
+library(pROC)       # For ROC analysis
+library(randomForest)  # Random Forest model
+library(ROSE)       # Handling imbalance
+library(iml)        # For SHAP explanations
+library(ggplot2)    # For visualization
+
+set.seed(42)  # Ensure reproducibility
+
+# ---------------------- Step 1: Data Preprocessing ----------------------
+
+# Fix gender inconsistencies
+train_data$Gender <- factor(tolower(as.character(train_data$Gender)))
+test_data$Gender <- factor(tolower(as.character(test_data$Gender)))
+
+# Handle rare country levels (group those with <5 instances into "Other")
+rare_countries <- names(which(table(train_data$Country) < 5))
+train_data$Country <- as.character(train_data$Country)
+train_data$Country[train_data$Country %in% rare_countries] <- "Other"
+train_data$Country <- factor(train_data$Country)
+
+test_data$Country <- as.character(test_data$Country)
+test_data$Country[test_data$Country %in% rare_countries] <- "Other"
+test_data$Country <- factor(test_data$Country, levels = levels(train_data$Country))  # Ensure same levels
+
+# Ensure target variable is a factor
+train_data$benefits <- factor(train_data$benefits, levels = c("0", "1"))
+test_data$benefits <- factor(test_data$benefits, levels = c("0", "1"))
+
+# ---------------------- Fix Age Issues ----------------------
+
+# Convert Age to numeric if necessary
+train_data$Age <- as.numeric(train_data$Age)
+test_data$Age <- as.numeric(test_data$Age)
+
+# Remove extreme Age values (negative & unrealistic)
+train_data$Age[train_data$Age < 0 | train_data$Age > 100] <- median(train_data$Age, na.rm = TRUE)
+test_data$Age[test_data$Age < 0 | test_data$Age > 100] <- median(test_data$Age, na.rm = TRUE)
+
+# ---------------------- Step 2: Handle Class Imbalance ----------------------
+
+# Apply ROSE to balance classes
+# Convert character variables to factors
+train_data[] <- lapply(train_data, function(x) if (is.character(x)) factor(x) else x)
+
+# Now apply ROSE
+train_data_balanced <- ROSE(benefits ~ ., data = train_data, seed = 42)$data
+train_data_balanced$benefits <- factor(train_data_balanced$benefits, levels = c("0", "1"))  # Ensure factor
+
+for (col in names(train_data_balanced)) {
+  if (is.numeric(train_data_balanced[[col]])) {
+    train_data_balanced[[col]][is.na(train_data_balanced[[col]])] <- median(train_data_balanced[[col]], na.rm = TRUE)
+  } else {
+    train_data_balanced[[col]][is.na(train_data_balanced[[col]])] <- as.character(names(sort(table(train_data_balanced[[col]]), decreasing = TRUE))[1])
+  }
+}
+
+train_data_balanced$Gender <- as.character(train_data_balanced$Gender)
+train_data_balanced$Gender[!(train_data_balanced$Gender %in% c("Male", "Female", "Non-binary"))] <- "Other"
+train_data_balanced$Gender <- factor(train_data_balanced$Gender)
+
+test_data$Gender <- as.character(test_data$Gender)
+test_data$Gender[!(test_data$Gender %in% levels(train_data_balanced$Gender))] <- "Other"
+test_data$Gender <- factor(test_data$Gender, levels = levels(train_data_balanced$Gender))
+
+# ---------------------- Step 3: Train Generalized Additive Model (GAM) ----------------------
+
+# ---------------------- Step 3: Train Generalized Additive Model (GAM) ----------------------
+
+gam_model <- gam(benefits ~ Age + work_interfere + 
+                 no_employees + family_history + treatment + leave + 
+                 mental_vs_physical + obs_consequence, 
+                 data = train_data_balanced, family = binomial, method = "REML")
+
+# Print model summary
+summary(gam_model)
+
+
+# ---------------------- Step 4: Compute SHAP Values for GAM ----------------------
+
+# Prepare dataset for SHAP
+X_train <- train_data_balanced[, -which(names(train_data_balanced) == "benefits")]  # Remove target variable
+predictor_gam <- Predictor$new(gam_model, data = X_train, y = train_data_balanced$benefits, type = "response")
+
+
+# Compute SHAP values
+shapley_gam <- Shapley$new(predictor_gam, x.interest = X_train[1, ])
+
+# Plot SHAP values
+plot(shapley_gam)
+
+# Alternative: Feature Importance using SHAP
+#imp <- FeatureImp$new(predictor_gam, loss = "ce")
+#plot(imp)
+
+# ---------------------- Step 5: Make Predictions ----------------------
+
+# Ensure categorical variables in test_data have the same factor levels as in train_data_balanced
+categorical_vars <- c("Country", "work_interfere", "no_employees", 
+                      "family_history", "treatment", "leave", 
+                      "mental_vs_physical", "obs_consequence", "Gender")
+
+for (var in categorical_vars) {
+  test_data[[var]] <- factor(test_data[[var]], levels = levels(train_data_balanced[[var]]))
+}
+
+# Predict probabilities on test set
+y_pred_prob <- predict(gam_model, newdata = test_data, type = "response")
+
+# Ensure predictions are numeric
+y_pred_prob <- as.numeric(y_pred_prob)
+
+
+# ---------------------- Step 6: Find Optimal Probability Threshold ----------------------
+
+roc_curve <- roc(test_data$benefits, y_pred_prob)
+best_threshold <- coords(roc_curve, "best", ret = "threshold")
+
+# Convert probabilities to binary predictions using optimal threshold
+y_pred_class <- factor(ifelse(y_pred_prob > as.numeric(best_threshold), "1", "0"),
+                       levels = levels(test_data$benefits))
+
+# Ensure factor levels match test_data$benefits
+y_pred_class <- factor(y_pred_class, levels = levels(test_data$benefits))
+
+# ---------------------- Step 7: Evaluate Model Performance ----------------------
+
+# Check lengths
+cat("Length of y_pred_class:", length(y_pred_class), "\n")
+cat("Length of test_data$benefits:", length(test_data$benefits), "\n")
+
+# Ensure factor consistency
+y_pred_class <- factor(y_pred_class, levels = levels(test_data$benefits))
+
+# Compute confusion matrix
+conf_matrix <- confusionMatrix(y_pred_class, test_data$benefits)
+print(conf_matrix)
+
+```
+```{r}
+# ---------------------- Step 8: Plot ROC Curve ----------------------
+
+# Plot ROC curve using ggroc from pROC
+roc_obj <- roc(test_data$benefits, y_pred_prob)
+
+# Plot using base plot
+plot(roc_obj, col = "#1f77b4", lwd = 2, main = "ROC Curve - GAM Model")
+abline(a = 0, b = 1, lty = 2, col = "gray")  # Diagonal line
+
+# Optional: Print AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+```
+
+
+```{r}
+# Using ggplot2 for ROC
+# ---------------------- Step 8: Enhanced ROC Curve ----------------------
+
+# Load necessary library
+library(ggplot2)
+library(pROC)
+
+# Compute ROC
+roc_obj <- roc(test_data$benefits, y_pred_prob)
+auc_value <- auc(roc_obj)
+
+# Extract ROC curve data
+roc_df <- data.frame(
+  Specificity = 1 - roc_obj$specificities,
+  Sensitivity = roc_obj$sensitivities
+)
+
+# Plot using ggplot2
+ggplot(roc_df, aes(x = Specificity, y = Sensitivity)) +
+  geom_line(color = "#2c7bb6", size = 1.5) +
+  geom_abline(linetype = "dashed", color = "gray50", size = 0.8) +
+  annotate("text", x = 0.6, y = 0.2, 
+           label = paste0("AUC = ", round(auc_value, 3)), 
+           size = 5, color = "#2c7bb6", fontface = "bold") +
+  theme_minimal(base_size = 14) +
+  ggtitle("ROC Curve - GAM Model") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+
+```
+
+

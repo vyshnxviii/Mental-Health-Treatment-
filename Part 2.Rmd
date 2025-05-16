@@ -1,0 +1,430 @@
+---
+title: "log reg"
+output:
+  html_document: default
+  word_document: default
+date: "2025-04-21"
+---
+
+
+```{r}
+library(dplyr)
+library(caret)
+library(randomForest)
+library(iml)
+library(ggplot2)
+
+# Load dataset
+df <- read.csv("survey.csv")
+
+# Drop unnecessary columns
+df <- df %>% select(-Timestamp, -comments, -state)
+
+# Encode categorical variables
+df <- df %>% mutate(across(where(is.character), as.factor))
+df <- df %>% mutate(across(where(is.factor), as.numeric))
+
+# Handle missing values
+df <- df %>% mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+# Define features and target
+X <- df %>% select(-treatment)
+y <- df$treatment
+
+# Split dataset
+set.seed(42)
+train_index <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X[train_index, ]
+X_test <- X[-train_index, ]
+y_train <- y[train_index]
+y_test <- y[-train_index]
+
+# Ensure matching indices after NA removal
+train_data <- na.omit(data.frame(X_train, y_train))
+X_train <- train_data %>% select(-y_train)
+y_train <- train_data$y_train
+
+# Train model
+model <- randomForest(X_train, as.factor(y_train), ntree = 100)
+
+# Predictions
+y_pred <- predict(model, X_test)
+
+# Model Evaluation
+accuracy <- mean(y_pred == y_test)
+print(paste("Accuracy:", accuracy))
+print("\nClassification Report:")
+print(confusionMatrix(as.factor(y_pred), as.factor(y_test)))
+
+# SHAP (Feature Importance using iml package)
+X_test_df <- as.data.frame(X_test)
+predictor <- Predictor$new(model, data = X_test_df, y = as.factor(y_test))
+shapley <- Shapley$new(predictor, x.interest = X_test_df[1, ])  # SHAP values for first observation
+
+# Plot SHAP values
+plot(shapley) + ggtitle("SHAP Feature Importance for First Observation")
+```
+```{r}
+library(dplyr)
+library(caret)
+library(iml)
+library(ggplot2)
+
+# Load dataset
+df <- read.csv("survey.csv")
+
+# Drop unnecessary columns
+df <- df %>% select(-Timestamp, -comments, -state)
+
+# Encode categorical variables
+df <- df %>% mutate(across(where(is.character), as.factor))
+df <- df %>% mutate(across(where(is.factor), as.numeric))
+
+# Handle missing values
+df <- df %>% mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+# Define features and target
+X <- df %>% select(-treatment)
+y <- df$treatment
+
+# Split dataset
+set.seed(42)
+train_index <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X[train_index, ]
+X_test <- X[-train_index, ]
+y_train <- y[train_index]
+y_test <- y[-train_index]
+
+# Ensure matching indices after NA removal
+train_data <- na.omit(data.frame(X_train, y_train))
+X_train <- train_data %>% select(-y_train)
+y_train <- train_data$y_train
+X_test_df <- as.data.frame(X_test)
+
+```
+
+
+
+
+
+```{r}
+library(e1071)
+
+# SVM Model
+svm_model <- svm(as.factor(y_train) ~ ., data = data.frame(X_train, y_train), probability = TRUE)
+
+# Predict
+svm_pred <- predict(svm_model, newdata = X_test)
+
+# Evaluation
+svm_accuracy <- mean(svm_pred == y_test)
+print(paste("SVM Accuracy:", svm_accuracy))
+print(confusionMatrix(as.factor(svm_pred), as.factor(y_test)))
+
+# SHAP
+svm_predictor <- Predictor$new(svm_model, data = X_test_df, y = as.factor(y_test), type = "prob")
+svm_shapley <- Shapley$new(svm_predictor, x.interest = X_test_df[1, ])
+plot(svm_shapley) + ggtitle("SVM SHAP (First Observation)")
+
+```
+```{r}
+library(class)
+
+# Scale data
+X_train_scaled <- scale(X_train)
+X_test_scaled <- scale(X_test, center = attr(X_train_scaled, "scaled:center"),
+                       scale = attr(X_train_scaled, "scaled:scale"))
+
+# KNN (k = 5)
+knn_pred <- knn(train = X_train_scaled, test = X_test_scaled, cl = y_train, k = 5)
+
+# Evaluation
+knn_accuracy <- mean(knn_pred == y_test)
+print(paste("KNN Accuracy:", knn_accuracy))
+print(confusionMatrix(as.factor(knn_pred), as.factor(y_test)))
+
+# SHAP (optional, not as meaningful for KNN but possible with custom wrapper)
+# knn_predictor <- Predictor$new(...)
+
+```
+```{r}
+library(e1071)
+library(iml)
+
+# Train Naive Bayes model
+nb_model <- naiveBayes(as.factor(y_train) ~ ., data = data.frame(X_train, y_train))
+
+# Predictions
+nb_pred <- predict(nb_model, X_test)
+nb_accuracy <- mean(nb_pred == y_test)
+print(paste("Naive Bayes Accuracy:", nb_accuracy))
+print(confusionMatrix(as.factor(nb_pred), as.factor(y_test)))
+
+# SHAP setup
+X_test_df <- as.data.frame(X_test)
+
+# Custom predict function that returns class probabilities
+nb_predict_function <- function(model, newdata) {
+  predict(model, newdata, type = "raw")
+}
+
+# iml predictor with custom predict function
+nb_predictor <- Predictor$new(
+  model = nb_model,
+  data = X_test_df,
+  y = as.factor(y_test),
+  predict.function = nb_predict_function
+)
+
+# SHAP values for first observation
+nb_shapley <- Shapley$new(nb_predictor, x.interest = X_test_df[1, ])
+plot(nb_shapley) + ggtitle("Naive Bayes SHAP (First Observation)")
+
+
+```
+```{r}
+library(nnet)
+library(iml)
+
+# Train MLP model
+mlp_model <- nnet(as.factor(y_train) ~ ., data = data.frame(X_train, y_train),
+                  size = 5, maxit = 200, decay = 0.01, trace = FALSE)
+
+# Predictions
+mlp_pred <- predict(mlp_model, X_test, type = "class")
+
+# Evaluation
+mlp_accuracy <- mean(mlp_pred == y_test)
+print(paste("MLP Accuracy:", mlp_accuracy))
+print(confusionMatrix(as.factor(mlp_pred), as.factor(y_test)))
+
+# SHAP setup
+X_test_df <- as.data.frame(X_test)
+
+# Custom predict function for probability output
+mlp_predict_function <- function(model, newdata) {
+  probs <- predict(model, newdata, type = "raw")
+  data.frame("0" = 1 - probs, "1" = probs)
+}
+
+# iml predictor
+mlp_predictor <- Predictor$new(
+  model = mlp_model,
+  data = X_test_df,
+  y = as.factor(y_test),
+  predict.function = mlp_predict_function
+)
+
+# SHAP values for first observation
+mlp_shapley <- Shapley$new(mlp_predictor, x.interest = X_test_df[1, ])
+plot(mlp_shapley) + ggtitle("MLP SHAP (First Observation)")
+
+
+```
+```{r}
+library(rpart)
+library(rpart.plot)
+
+# Train Decision Tree
+tree_model <- rpart(as.factor(y_train) ~ ., data = data.frame(X_train, y_train), method = "class")
+
+# Predict
+tree_pred <- predict(tree_model, X_test, type = "class")
+
+# Evaluation
+tree_accuracy <- mean(tree_pred == y_test)
+print(paste("Decision Tree Accuracy:", tree_accuracy))
+print(confusionMatrix(as.factor(tree_pred), as.factor(y_test)))
+
+# Visualize tree
+rpart.plot(tree_model)
+
+# SHAP
+tree_predictor <- Predictor$new(tree_model, data = X_test_df, y = as.factor(y_test), type = "prob")
+tree_shapley <- Shapley$new(tree_predictor, x.interest = X_test_df[1, ])
+plot(tree_shapley) + ggtitle("Decision Tree SHAP (First Observation)")
+
+```
+```{r}
+library(xgboost)
+library(iml)
+
+# Convert label to 0/1
+y_train_xgb <- ifelse(y_train == min(y_train), 0, 1)
+y_test_xgb <- ifelse(y_test == min(y_test), 0, 1)
+
+# Convert to matrix
+X_train_matrix <- as.matrix(X_train)
+X_test_matrix <- as.matrix(X_test)
+
+# Train the XGBoost model
+xgb_model <- xgboost(data = X_train_matrix, label = y_train_xgb,
+                     nrounds = 100, objective = "binary:logistic", verbose = 0)
+
+# Predictions
+xgb_probs <- predict(xgb_model, X_test_matrix)
+xgb_pred <- ifelse(xgb_probs > 0.5, 1, 0)
+
+# Evaluate
+xgb_accuracy <- mean(xgb_pred == y_test_xgb)
+print(paste("XGBoost Accuracy:", xgb_accuracy))
+print(confusionMatrix(as.factor(xgb_pred), as.factor(y_test_xgb)))
+
+# SHAP Setup
+X_test_df <- as.data.frame(X_test)  # Make sure this is a data frame
+
+# Custom prediction function that returns class probabilities
+xgb_predict_function <- function(model, newdata) {
+  probs <- predict(model, as.matrix(newdata))
+  return(data.frame("0" = 1 - probs, "1" = probs))
+}
+
+# Use iml with custom predict function
+xgb_predictor <- Predictor$new(
+  model = xgb_model,
+  data = X_test_df,
+  y = as.factor(y_test_xgb),
+  predict.function = xgb_predict_function
+)
+
+# SHAP values for the first observation
+xgb_shapley <- Shapley$new(xgb_predictor, x.interest = X_test_df[1, ])
+plot(xgb_shapley) + ggtitle("XGBoost SHAP (First Observation)")
+
+```
+```{r}
+# --- Load Libraries ---
+library(caret)
+library(randomForest)
+library(iml)
+library(cluster)
+library(factoextra)
+library(ggplot2)
+library(Rtsne)
+library(dplyr)
+
+# --- Load and preprocess dataset ---
+df <- read.csv("survey.csv")
+df <- df %>% mutate(across(where(is.character), as.factor))
+df <- df %>% mutate(across(where(is.factor), as.numeric))
+df <- df %>% mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+# --- Features & target ---
+X <- df %>% select(-treatment)
+y <- as.factor(df$treatment)
+
+# --- Train-test split ---
+set.seed(42)
+train_index <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X[train_index, ]
+X_test <- X[-train_index, ]
+y_train <- y[train_index]
+y_test <- y[-train_index]
+X_test_df <- as.data.frame(X_test)
+
+# --- Train Random Forest model ---
+rf_model <- randomForest(X_train, y = y_train, ntree = 100)
+
+# --- SHAP values using iml ---
+predictor <- Predictor$new(rf_model, data = X_test_df, y = y_test)
+shap_values <- lapply(1:nrow(X_test_df), function(i) {
+  shap <- Shapley$new(predictor, x.interest = X_test_df[i, ])
+  shap_result <- shap$results
+  shap_vector <- setNames(shap_result$phi, shap_result$feature)
+  return(shap_vector)
+})
+
+shap_matrix <- do.call(rbind, shap_values)
+
+# --- Dimensionality Reduction: PCA ---
+pca_res <- prcomp(shap_matrix, center = TRUE, scale. = TRUE)
+pca_df <- as.data.frame(pca_res$x[, 1:2])
+
+# --- K-Means Clustering ---
+kmeans_res <- kmeans(pca_df, centers = 3, nstart = 25)
+pca_df$Cluster <- as.factor(kmeans_res$cluster)
+
+ggplot(pca_df, aes(PC1, PC2, color = Cluster)) +
+  geom_point(size = 2) +
+  labs(title = "K-Means Clustering on SHAP Values (PCA)") +
+  theme_minimal()
+
+# --- Hierarchical Clustering ---
+dist_mat <- dist(shap_matrix)
+hc_res <- hclust(dist_mat, method = "ward.D2")
+plot(hc_res, labels = FALSE, main = "Hierarchical Clustering Dendrogram")
+hc_clusters <- cutree(hc_res, k = 3)
+
+# --- UMAP or t-SNE (optional) ---
+tsne_res <- Rtsne(shap_matrix, dims = 2, perplexity = 30, verbose = TRUE, max_iter = 500)
+tsne_df <- as.data.frame(tsne_res$Y)
+tsne_df$Cluster <- as.factor(kmeans_res$cluster)
+
+ggplot(tsne_df, aes(V1, V2, color = Cluster)) +
+  geom_point(size = 2) +
+  labs(title = "t-SNE Clustering on SHAP Values") +
+  theme_minimal()
+```
+```{r}
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+
+# --- Attach cluster assignments to SHAP matrix ---
+shap_with_clusters <- as.data.frame(shap_matrix)
+colnames(shap_with_clusters) <- make.names(colnames(shap_with_clusters), unique = TRUE)
+shap_with_clusters$Cluster <- kmeans_res$cluster
+
+
+
+# --- Summarize mean SHAP values per cluster ---
+cluster_shap_summary <- shap_with_clusters %>%
+  group_by(Cluster) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+# --- Print table to console ---
+print(cluster_shap_summary)
+
+# --- Plot SHAP profiles per cluster ---
+cluster_long <- melt(cluster_shap_summary, id.vars = "Cluster")
+
+ggplot(cluster_long, aes(x = variable, y = value, fill = as.factor(Cluster))) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(title = "Average SHAP Values by Cluster", 
+       x = "Feature", y = "Mean SHAP Contribution") +
+  theme_minimal()
+
+
+```
+```{r}
+library(dplyr)
+library(reshape2)
+library(tidyr)
+
+library(ggplot2)
+
+# --- Top 3 Features per Cluster (Absolute SHAP) ---
+top_features_per_cluster <- cluster_shap_summary %>%
+  pivot_longer(-Cluster, names_to = "Feature", values_to = "Mean_SHAP") %>%
+  mutate(Abs_SHAP = abs(Mean_SHAP)) %>%
+  group_by(Cluster) %>%
+  slice_max(order_by = Abs_SHAP, n = 3, with_ties = FALSE) %>%
+  arrange(Cluster, desc(Abs_SHAP))
+
+# --- Plot Top 3 Features per Cluster ---
+ggplot(top_features_per_cluster, aes(x = reorder(Feature, Abs_SHAP), y = Abs_SHAP, fill = as.factor(Cluster))) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~ Cluster, scales = "free_y") +
+  coord_flip() +
+  labs(
+    title = "Top 3 Most Impactful Features per SHAP Cluster",
+    x = "Feature",
+    y = "Absolute Mean SHAP Value",
+    fill = "Cluster"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+
